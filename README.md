@@ -16,7 +16,7 @@
 * Jul 23, 2025: 👋 We release the technical report of [Step-Audio 2](https://arxiv.org/pdf/2507.16632).
 
 <div align="center">
-  <img src="assets/usage.png"  width=800>
+  <img src="assets/usage.jpg"  width=800>
 </div>
 
 ## Introduction
@@ -51,7 +51,7 @@ CER for Chinese, Cantonese and Japanese and WER for Arabian and English. N/A ind
       <th style="text-align: center;">Doubao LLM ASR</th>
       <th style="text-align: center;">GPT-4o Transcribe</th>
       <th style="text-align: center;">Kimi-Audio</th>
-      <th style="text-align: center;">Qwen2.5-Omni</th>
+      <th style="text-align: center;">Qwen-Omni</th>
       <th style="text-align: center;">Step-Audio 2</th>
     </tr>
   </thead>
