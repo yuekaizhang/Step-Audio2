@@ -5,7 +5,7 @@ def asr_test(model):
         {"role": "human", "content": [{"type": "audio", "audio": "assets/give_me_a_brief_introduction_to_the_great_wall.wav"}]},
         {"role": "assistant", "content": None}
     ]
-    tokens, text, _ = model(messages, max_new_tokens=256, temperature=0.1, do_sample=True)
+    tokens, text, _ = model(messages, max_new_tokens=256)
     print(text)
 
 # S2TT（support: en,zh,ja）
@@ -98,7 +98,7 @@ def multi_turn_aqaa_test(model, token2wav):
             }
         )
 
-# tool_call test
+# Tool call & Web search
 def tool_call_test(model, token2wav):
     history = [
             {"role": "system", "content": "你的名字叫做小跃，是由阶跃星辰公司训练出来的语音大模型。\n你具备调用工具解决问题的能力，你需要根据用户的需求和上下文情景，自主选择是否调用系统提供的工具来协助用户。\n你情感细腻，观察能力强，擅长分析用户的内容，并作出善解人意的回复，说话的过程中时刻注意用户的感受，富有同理心，提供多样的情绪价值。\n今天是2025年8月28日，星期四\n请用默认女声与用户交流"},
@@ -129,6 +129,31 @@ def tool_call_test(model, token2wav):
     with open('output-tool-call-2.wav', 'wb') as f:
         f.write(audio)
 
+# Paralingustic information understanding
+def paralinguistic_test(model, token2wav):
+    messages = [
+        {"role": "system", "content":"请用语音与我交流。"},
+        {"role": "human", "content": [{"type": "audio", "audio": "assets/paralinguistic_information_understanding.wav"}]},
+        {"role": "assistant", "content": "<tts_start>", "eot": False}, # Insert <tts_start> for speech response
+    ]
+    tokens, text, audio = model(messages, max_tokens=2048, temperature=0.7, do_sample=True)
+    print(text)
+    #print(tokens)
+    audio = [x for x in audio if x < 6561] # remove audio padding
+    audio = token2wav(audio, prompt_wav='assets/default_female.wav')
+    with open('output-paralinguistic.wav', 'wb') as f:
+        f.write(audio)
+
+# Audio understanding
+def mmau_test(model):
+    messages = [
+        {"role": "system", "content": "You are an expert in audio analysis, please analyze the audio content and answer the questions accurately."},
+        {"role": "human", "content": [{"type": "text", "text": f"Which of the following best describes the male vocal in the audio? Please choose the answer from the following options: [Soft and melodic, Aggressive and talking, High-pitched and singing, Whispering] Output the final answer in <RESPONSE> </RESPONSE>."},
+        {"type": "audio", "audio": "assets/mmau_test.wav"}]},
+        {"role": "assistant", "content": None}
+    ]
+    tokens, text, _ = model(messages, max_new_tokens=256, num_beams=2)
+    print(text)
 
 if __name__ == '__main__':
     from stepaudio2 import StepAudio2
@@ -143,3 +168,5 @@ if __name__ == '__main__':
     multi_turn_aqta_test(model)
     multi_turn_aqaa_test(model, token2wav)
     tool_call_test(model, token2wav)
+    paralinguistic_test(model, token2wav)
+    mmau_test(model)
