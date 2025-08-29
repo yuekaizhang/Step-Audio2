@@ -99,7 +99,17 @@ python web_demo.py
 - Step-Audio 2 is also available in our StepFun AI Assistant mobile App with both web and audio search tools enabled.
 - Please scan the following QR code to download it from your app store then tap the phone icon in the top-right corner.
 
-<img src="./assets/qrcode.jpg" width="200" alt="QR code">
+<div align="center">
+  <img src="./assets/qrcode.jpg" width="200" alt="QR code">
+</div>
+
+## WeChat group
+
+You can scan the following QR code to join our WeChat group for communication and discussion.
+<div align="center">
+  <img src="./assets/wechat_group.jpg" width="200" alt="QR code">
+</div>
+
 
 ## Evaluation
 <div align="center">
