@@ -48,17 +48,11 @@ Step-Audio 2 is an end-to-end multi-modal large language model designed for indu
 + **Open-source**: [Step-Audio 2 mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini) and [Step-Audio 2 mini Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) are released under [Apache 2.0](LICENSE) license.
 
 ## Model Download
-### Huggingface
-| Models   | 🤗 Hugging Face |
-|-------|-------|
-| Step-Audio 2 mini | [stepfun-ai/Step-Audio-2-mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini) |
-| Step-Audio 2 mini Base | [stepfun-ai/Step-Audio-2-mini-Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) |
+| Models   | 🤗 Hugging Face | ModelScope |
+|-------|-------|-------|
+| Step-Audio 2 mini | [stepfun-ai/Step-Audio-2-mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini) | [stepfun-ai/Step-Audio-2-mini](https://www.modelscope.cn/models/stepfun-ai/Step-Audio-2-mini) |
+| Step-Audio 2 mini Base | [stepfun-ai/Step-Audio-2-mini-Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) | [stepfun-ai/Step-Audio-2-mini-Base](https://www.modelscope.cn/models/stepfun-ai/Step-Audio-2-mini-Base) |
 
-<!-- ### Modelscope
-| Models   | Links   |
-|-------|-------|
-| Step-Audio-2-mini | [modelscope](https://modelscope.cn/models/stepfun-ai/Step-Audio-2-mini) |
-| Step-Audio-2-mini-Base | [modelscope](https://modelscope.cn/models/stepfun-ai/Step-Audio-2-mini-Base) | -->
 
 ## Model Usage
 ### 🔧 Dependencies and Installation
@@ -848,11 +842,6 @@ URO-Bench. U. R. O. stands for understanding, reasoning, and oral conversation, 
     </tr>
   </tbody>
 </table>
-
-<!-- ## Online Engine
-The online version of Step-Audio can be accessed from app version of [跃问](https://yuewen.cn), where some impressive examples can be found as well.
-
-<img src="./assets/yuewen.jpeg" width="200" alt="QR code"> -->
 
 ## Acknowledgements
 
