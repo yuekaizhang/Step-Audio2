@@ -129,8 +129,8 @@ class StepAudio2(StepAudio2Base):
 if __name__ == '__main__':
     from token2wav import Token2wav
 
-    model = StepAudio2('/mnt/gpfs/lijingbei/Step-Audio-2-mini')
-    token2wav = Token2wav('/mnt/gpfs/lijingbei/Step-Audio-2-mini/token2wav')
+    model = StepAudio2('Step-Audio-2-mini')
+    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
 
     # Text-to-text conversation
     print()
