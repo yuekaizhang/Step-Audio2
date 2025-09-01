@@ -118,6 +118,7 @@ def _launch_demo(args, audio_model, token2wav):
 if __name__ == "__main__":
     import os
     from argparse import ArgumentParser
+    from pathlib import Path
 
     from stepaudio2 import StepAudio2
     from token2wav import Token2wav
@@ -125,7 +126,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--model-path", type=str, default='Step-Audio-2-mini', help="Model path.")
     parser.add_argument(
-        "--server-port", type=int, default=7860, help="Demo server port."
+        "--server-port", type=int, default=7862, help="Demo server port."
     )
     parser.add_argument(
         "--server-name", type=str, default="0.0.0.0", help="Demo server name."
@@ -138,6 +139,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     os.environ["GRADIO_TEMP_DIR"] = args.cache_dir
+    Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
 
     audio_model = StepAudio2(args.model_path)
     token2wav = Token2wav(f"{args.model_path}/token2wav")
