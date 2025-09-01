@@ -107,7 +107,7 @@ python web_demo.py
 
 You can scan the following QR code to join our WeChat group for communication and discussion.
 <div align="center">
-  <img src="./assets/wechat_group.jpg" width="200" alt="QR code">
+  <img src="./assets/wechat_group.png" width="200" alt="QR code">
 </div>
 
 
