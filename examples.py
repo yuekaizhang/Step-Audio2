@@ -148,8 +148,8 @@ def paralinguistic_test(model, token2wav):
 def mmau_test(model):
     messages = [
         {"role": "system", "content": "You are an expert in audio analysis, please analyze the audio content and answer the questions accurately."},
-        {"role": "human", "content": [{"type": "text", "text": f"Which of the following best describes the male vocal in the audio? Please choose the answer from the following options: [Soft and melodic, Aggressive and talking, High-pitched and singing, Whispering] Output the final answer in <RESPONSE> </RESPONSE>."},
-        {"type": "audio", "audio": "assets/mmau_test.wav"}]},
+        {"role": "human", "content": [{"type": "audio", "audio": "assets/mmau_test.wav"},
+                                      {"type": "text", "text": f"Which of the following best describes the male vocal in the audio? Please choose the answer from the following options: [Soft and melodic, Aggressive and talking, High-pitched and singing, Whispering] Output the final answer in <RESPONSE> </RESPONSE>."}]},
         {"role": "assistant", "content": None}
     ]
     tokens, text, _ = model(messages, max_new_tokens=256, num_beams=2)

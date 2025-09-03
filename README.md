@@ -20,6 +20,7 @@
 
 ## 🔥🔥🔥 News!!
 <!-- * Aug 29, 2025: 👋 We release the  # TODO -->
+* Sep 3, 2025: 👋 We release our [vLLM backend](https://github.com/stepfun-ai/vllm/tree/step-audio2-mini) and corresponding [examples](examples-vllm.py).
 * Aug 29, 2025: 👋 We are pleased to open-source [Step-Audio 2 mini](https://huggingface.co/stepfun-ai/Step-Audio-2-mini), [Step-Audio 2 mini Base](https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base) and their corresponding inference [examples](examples.py). [Technical report](https://arxiv.org/pdf/2507.16632) is also updated.
 * Jul 24, 2025: 👋 We release [demonstration videos for Step-Audio 2](https://www.stepfun.com/docs/step-audio2).
 * Jul 23, 2025: 👋 We release our benchmark for paralinguistic information understanding, [StepEval-Audio-Paralinguistic](https://huggingface.co/datasets/stepfun-ai/StepEval-Audio-Paralinguistic).
@@ -72,11 +73,39 @@ git clone https://huggingface.co/stepfun-ai/Step-Audio-2-mini
 # git clone https://huggingface.co/stepfun-ai/Step-Audio-2-mini-Base
 ```
 
+### 🔧 vLLM docker image
+
+We highly recommend using our vLLM backend for faster inference, also deploying across multiple GPUs.
+
+```bash
+# (Optional) build the docker image yourself (very slow and requires 32GiB of memory)
+# docker build -t stepfun2025/vllm:step-audio-2-v20250904 .
+
+# run vLLM docker
+docker run --rm -ti --gpus all \
+    -v Step-Audio-2-mini:/Step-Audio-2-mini \
+    -p 8000:8000 \
+    stepfun2025/vllm:step-audio-2-v20250904 \
+    -- vllm serve /Step-Audio-2-mini \
+    --served-model-name step-audio-2-mini \
+    --port 8000 \
+    --max-model-len 16384 \
+    --max-num-seqs 32 \
+    --tensor-parallel-size 1 \
+    --enable-auto-tool-choice \
+    --tool-call-parser step_audio_2 \
+    --tokenizer-mode step_audio_2 \
+    --chat_template_content_format string \
+    --audio-parser step_audio_2_tts_ta4 \
+    --trust-remote-code
+```
+
 ### 🚀 Inference Scripts
 
 ```bash
 python examples.py
 # python examples-base.py
+# python examples-vllm.py
 ```
 
 ### 🚀 Local web demonstration
@@ -84,6 +113,7 @@ python examples.py
 ```bash
 pip install gradio
 python web_demo.py
+# python web_demo_vllm.py
 ```
 
 
