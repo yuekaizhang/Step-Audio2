@@ -75,7 +75,7 @@ git clone https://huggingface.co/stepfun-ai/Step-Audio-2-mini
 
 ### 🔧 vLLM docker image
 
-We highly recommend using our vLLM backend for faster inference, also deploying across multiple GPUs.
+We highly recommend using our vLLM backend for faster and streaming inference, also deploying across multiple GPUs.
 
 ```bash
 # (Optional) build the docker image yourself (very slow and requires 32GiB of memory)

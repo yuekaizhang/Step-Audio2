@@ -4,6 +4,7 @@ import torch
 import torchaudio
 import s3tokenizer
 import onnxruntime
+import numpy as np
 
 import torchaudio.compliance.kaldi as kaldi
 from flashcosyvoice.modules.hifigan import HiFTGenerator
@@ -36,7 +37,9 @@ class Token2wav():
         self.hift.load_state_dict(hift_state_dict, strict=True)
         self.hift.cuda().eval()
 
-    def __call__(self, generated_speech_tokens, prompt_wav):
+        self.cache = {}
+
+    def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
         mels = s3tokenizer.log_mel_spectrogram(audio)
         mels, mels_lens = s3tokenizer.padding([mels])
@@ -55,6 +58,12 @@ class Token2wav():
         prompt_mel = mel_spectrogram(audio).transpose(1, 2).squeeze(0)  # [T, num_mels]
         prompt_mels = prompt_mel.unsqueeze(0).cuda()
         prompt_mels_lens = torch.tensor([prompt_mels.shape[1]], dtype=torch.int32, device='cuda')
+        return prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens
+
+    def __call__(self, generated_speech_tokens, prompt_wav):
+        if prompt_wav not in self.cache:
+            self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
+        prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
 
         generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
         generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device='cuda')
@@ -70,8 +79,49 @@ class Token2wav():
 
         return output.getvalue()
 
+    def set_stream_cache(self, prompt_wav):
+        if prompt_wav not in self.cache:
+            self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
+        prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
+        self.stream_cache = self.flow.setup_cache(
+            torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1),
+            prompt_mels, spk_emb, n_timesteps=10)
+
+    def stream(self, generated_speech_tokens, prompt_wav, last_chunk=False):
+        if prompt_wav not in self.cache:
+            self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
+        prompt_speech_tokens, prompt_speech_tokens_lens, spk_emb, prompt_mels, prompt_mels_lens = self.cache[prompt_wav]
+
+        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
+        generated_speech_tokens_lens = torch.tensor([generated_speech_tokens.shape[1]], dtype=torch.int32, device='cuda')
+
+        if self.stream_cache is None:
+            raise ValueError("stream_cache is not set")
+
+        with torch.amp.autocast("cuda", dtype=torch.float16 if self.float16 else torch.float32):
+            chunk_mel, self.stream_cache = self.flow.inference_chunk(
+                token=generated_speech_tokens,
+                spk=spk_emb,
+                cache=self.stream_cache,
+                last_chunk=last_chunk,
+                n_timesteps=10,
+            )
+        if self.stream_cache['estimator_att_cache'].shape[4] > (prompt_mels.shape[1] + 100):
+            self.stream_cache['estimator_att_cache'] = torch.cat([
+                self.stream_cache['estimator_att_cache'][:, :, :, :, :prompt_mels.shape[1]],
+                self.stream_cache['estimator_att_cache'][:, :, :, :, -100:],
+            ], dim=4)
+
+        wav, _ = self.hift(speech_feat=chunk_mel)
+        wav_np = wav.cpu().numpy()
+        # Clip to [-1, 1] to avoid overflow, then scale to int16
+        wav_np = np.clip(wav_np, -1.0, 1.0)
+        wav_int16 = (wav_np * 32767.0).astype('<i2')  # 16-bit little-endian PCM
+        pcm_bytes = wav_int16.tobytes()
+        return pcm_bytes
+
 if __name__ == '__main__':
-    token2wav = Token2wav('/mnt/gpfs/lijingbei/Step-Audio-2-mini/token2wav')
+    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
 
     tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
     audio = token2wav(tokens, 'assets/default_male.wav')
