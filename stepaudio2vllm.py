@@ -1,8 +1,11 @@
 import base64
 import json
 import re
+import io
+import wave
 
 import requests
+from utils import load_audio
 
 
 class StepAudio2:
@@ -49,16 +52,28 @@ class StepAudio2:
 
     def process_content_item(self, item):
         if item["type"] == "audio":
-            with open(item["audio"], "rb") as f:
-                b64 = base64.b64encode(f.read()).decode('utf-8')
-            return {"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}}
-        return item
+            audio_tensor = load_audio(item["audio"], target_rate=16000)
+            chunks = []
+            for i in range(0, audio_tensor.shape[0], 25 * 16000):
+                chunk = audio_tensor[i:i + 25 * 16000]
+                if len(chunk.numpy()) == 0:
+                    continue
+                chunk_int16 = (chunk.numpy().clip(-1.0, 1.0) * 32767.0).astype('int16')
+                buf = io.BytesIO()
+                with wave.open(buf, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(chunk_int16.tobytes())
+                chunks.append({"type": "input_audio", "input_audio": {"data": base64.b64encode(buf.getvalue()).decode('utf-8'), "format": "wav"}})
+            return chunks
+        return [item]
 
     def apply_chat_template(self, messages):
         out = []
         for m in messages:
             if m["role"] == "human" and isinstance(m["content"], list):
-                out.append({"role": m["role"], "content": [self.process_content_item(i) for i in m["content"]]})
+                out.append({"role": m["role"], "content": [j for i in m["content"] for j in self.process_content_item(i)]})
             else:
                 out.append(m)
         return out
