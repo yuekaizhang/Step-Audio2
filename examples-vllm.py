@@ -152,6 +152,16 @@ def mmau_test(model):
     print(text)
 
 
+# Universal audio caption
+def uac_test(model):
+    messages = [
+        {"role": "system", "content": "你是一位经验丰富的音频分析专家，擅长对各种语音音频进行深入细致的分析。你的任务不仅仅是将音频内容准确转写为文字，还要对说话人的声音特征（如性别、年龄、情绪状态）、背景声音、环境信息以及可能涉及的事件进行全面描述。请以专业、客观的视角，详细、准确地完成每一次分析和转写。"},
+        {"role": "human", "content": [{"type": "audio", "audio": "assets/music_playing_followed_by_a_woman_speaking.wav"}]},
+        {"role": "assistant", "content": None}
+    ]
+    _, text, _ = model(messages, max_tokens=1024, temperature=0.5, top_p=0.9)
+    print(text)
+
 if __name__ == '__main__':
     api_url = "http://localhost:8000/v1/chat/completions"
     model_name = "step-audio-2-mini"
@@ -168,3 +178,4 @@ if __name__ == '__main__':
     tool_call_test(model, token2wav)
     paralinguistic_test(model, token2wav)
     mmau_test(model)
+    uac_test(model)
