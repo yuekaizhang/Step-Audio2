@@ -491,6 +491,7 @@ class DiT(nn.Module):
 
         # time
         t = self.t_embedder(t).unsqueeze(1)  # (b, 1, c)
+
         x = pack([x, mu], "b * t")[0]
         if spks is not None:
             spks = repeat(spks, "b c -> b c t", t=x.shape[-1])

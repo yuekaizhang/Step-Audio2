@@ -39,6 +39,36 @@ class CausalConditionalCFM(torch.nn.Module):
         if enable_cuda_graph:
             self.estimator._init_cuda_graph_all()
 
+    def forward_estimator(self, x, mask, mu, t, spks, cond):
+        if isinstance(self.estimator, torch.nn.Module):
+            return self.estimator(x, mask, mu, t, spks, cond)
+        else:
+            [estimator, stream], trt_engine = self.estimator.acquire_estimator()
+            # NOTE need to synchronize when switching stream
+            torch.cuda.current_stream().synchronize()
+            batch_size = x.size(0)
+            with stream:
+                estimator.set_input_shape('x', (batch_size, 80, x.size(2)))
+                estimator.set_input_shape('mask', (batch_size, 1, x.size(2)))
+                estimator.set_input_shape('mu', (batch_size, 80, x.size(2)))
+                estimator.set_input_shape('t', (batch_size,))
+                estimator.set_input_shape('spks', (batch_size, 80))
+                estimator.set_input_shape('cond', (batch_size, 80, x.size(2)))
+                data_ptrs = [x.contiguous().data_ptr(),
+                             mask.contiguous().data_ptr(),
+                             mu.contiguous().data_ptr(),
+                             t.contiguous().data_ptr(),
+                             spks.contiguous().data_ptr(),
+                             cond.contiguous().data_ptr(),
+                             x.data_ptr()]
+                for i, j in enumerate(data_ptrs):
+                    estimator.set_tensor_address(trt_engine.get_tensor_name(i), j)
+                # run trt engine
+                assert estimator.execute_async_v3(torch.cuda.current_stream().cuda_stream) is True
+                torch.cuda.current_stream().synchronize()
+            self.estimator.release_estimator(estimator, stream)
+            return x
+
     def solve_euler(self, x, t_span, mu, mask, spks, cond):
         """
         Fixed euler solver for ODEs.
@@ -55,7 +85,9 @@ class CausalConditionalCFM(torch.nn.Module):
             cond: Not used but kept for future purposes
         """
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
-        t = t.unsqueeze(dim=0)
+        # t = t.unsqueeze(dim=0)
+        t_in = torch.zeros([x.shape[0] * 2], device=x.device, dtype=x.dtype)
+
         assert self.inference_cfg_rate > 0, 'inference_cfg_rate better > 0'
 
         # constant during denoising
@@ -65,18 +97,16 @@ class CausalConditionalCFM(torch.nn.Module):
         cond_in = torch.cat([cond, torch.zeros_like(cond)], dim=0)
         
         for step in range(1, len(t_span)):
-
             x_in = torch.cat([x, x], dim=0)
-            t_in = torch.cat([t, t], dim=0)
+            t_in.fill_(t)
 
-            dphi_dt = self.estimator.forward(
-                x_in,
-                mask_in,
-                mu_in,
-                t_in,
+            dphi_dt = self.forward_estimator(
+                x_in, mask_in,
+                mu_in, t_in,
                 spks_in,
                 cond_in,
             )
+
             dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
             dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
             x = x + dt * dphi_dt
@@ -88,7 +118,8 @@ class CausalConditionalCFM(torch.nn.Module):
 
     @torch.inference_mode()
     def forward(self, mu, mask, spks, cond, n_timesteps=10, temperature=1.0):
-        z = self.rand_noise[:, :, :mu.size(2)] * temperature
+        # z = self.rand_noise[:, :, :mu.size(2)] * temperature
+        z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         # cosine scheduling
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
