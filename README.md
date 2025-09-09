@@ -79,13 +79,13 @@ We highly recommend using our vLLM backend for faster and streaming inference, a
 
 ```bash
 # (Optional) build the docker image yourself (very slow and requires 32GiB of memory)
-# docker build -t stepfun2025/vllm:step-audio-2-v20250904 .
+# docker build -t stepfun2025/vllm:step-audio-2-v20250909 .
 
 # run vLLM docker
 docker run --rm -ti --gpus all \
     -v Step-Audio-2-mini:/Step-Audio-2-mini \
     -p 8000:8000 \
-    stepfun2025/vllm:step-audio-2-v20250904 \
+    stepfun2025/vllm:step-audio-2-v20250909 \
     -- vllm serve /Step-Audio-2-mini \
     --served-model-name step-audio-2-mini \
     --port 8000 \
