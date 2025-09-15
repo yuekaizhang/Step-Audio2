@@ -50,7 +50,7 @@ class StepAudio2Base:
         generation_config.update(kwargs)
         generation_config = GenerationConfig(**generation_config)
 
-        outputs = self.llm.generate(**generate_inputs, generation_config=generation_config)
+        outputs = self.llm.generate(**generate_inputs, generation_config=generation_config, tokenizer=self.llm_tokenizer)
         output_token_ids = outputs[0, prompt_ids.shape[-1] : -1].tolist()
         output_text_tokens = [i for i in output_token_ids if i < 151688]
         output_audio_tokens = [i - 151696 for i in output_token_ids if i > 151695]
