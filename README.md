@@ -567,6 +567,35 @@ MMAU
   </tbody>
 </table>
 
+Big Bench Audio
+
+<table border="1" cellpadding="7" cellspacing="0" align="center">
+  <thead>
+    <tr>
+      <th align="center">Model</th>
+      <th align="center">Accuracy</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="left"><strong>GPT-Realtime</strong></td>
+      <td align="center">82.8</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2 mini</strong></td>
+      <td align="center">54.8</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2</strong></td>
+      <td align="center">80.0</td>
+    </tr>
+    <tr>
+      <td align="left"><strong>Step-Audio 2 Think</strong></td>
+      <td align="center"><strong>90.7</strong></td>
+    </tr>
+  </tbody>
+</table>
+
 ### Speech translation
 
 <table border="1" cellpadding="5" cellspacing="0" align="center">
