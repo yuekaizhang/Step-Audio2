@@ -11,6 +11,16 @@ from flashcosyvoice.modules.hifigan import HiFTGenerator
 from flashcosyvoice.utils.audio import mel_spectrogram
 from hyperpyyaml import load_hyperpyyaml
 
+def fade_in_out(fade_in_mel:torch.Tensor, fade_out_mel:torch.Tensor, window:torch.Tensor):
+    """perform fade_in_out in tensor style
+    """
+    mel_overlap_len = int(window.shape[0] / 2)
+    fade_in_mel = fade_in_mel.clone()
+    fade_in_mel[..., :mel_overlap_len] = \
+        fade_in_mel[..., :mel_overlap_len] * window[:mel_overlap_len] + \
+        fade_out_mel[..., -mel_overlap_len:] * window[mel_overlap_len:]
+    return fade_in_mel
+
 
 class Token2wav():
 
@@ -38,6 +48,15 @@ class Token2wav():
         self.hift.cuda().eval()
 
         self.cache = {}
+
+        # stream conf
+        self.mel_cache_len = 8  # hard-coded, 160ms
+        self.source_cache_len = int(self.mel_cache_len * 480)   # 50hz mel -> 24kHz wave
+        self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).cuda()
+
+        # hifigan cache
+        self.hift_cache_dict = {}
+
 
     def _prepare_prompt(self, prompt_wav):
         audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
@@ -88,6 +107,14 @@ class Token2wav():
             torch.cat([prompt_speech_tokens, prompt_speech_tokens[:, :3]], dim=1),
             prompt_mels, spk_emb, n_timesteps=10)
 
+        # hift cache
+        self.hift_cache_dict = dict(
+            mel = torch.zeros(1, prompt_mels.shape[2], 0, device='cuda'), 
+            source = torch.zeros(1, 1, 0, device='cuda'),
+            speech = torch.zeros(1, 0, device='cuda'),
+        )
+
+
     def stream(self, generated_speech_tokens, prompt_wav, last_chunk=False):
         if prompt_wav not in self.cache:
             self.cache[prompt_wav] = self._prepare_prompt(prompt_wav)
@@ -112,9 +139,29 @@ class Token2wav():
                 self.stream_cache['estimator_att_cache'][:, :, :, :, :prompt_mels.shape[1]],
                 self.stream_cache['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
+        
+        # vocoder cache
+        hift_cache_mel = self.hift_cache_dict['mel']
+        hift_cache_source = self.hift_cache_dict['source']
+        hift_cache_speech = self.hift_cache_dict['speech']
+        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
 
-        wav, _ = self.hift(speech_feat=chunk_mel)
-        wav_np = wav.cpu().numpy()
+        speech, source = self.hift(mel, hift_cache_source)
+
+        # overlap speech smooth
+        if hift_cache_speech.shape[-1] > 0:
+            speech = fade_in_out(speech, hift_cache_speech, self.speech_window)
+
+        # update vocoder cache
+        self.hift_cache_dict = dict(
+            mel = mel[..., -self.mel_cache_len:].clone().detach(),
+            source = source[:, :, -self.source_cache_len:].clone().detach(),
+            speech = speech[:, -self.source_cache_len:].clone().detach(),
+        )
+        if not last_chunk:
+            speech = speech[:, :-self.source_cache_len]
+
+        wav_np = speech.cpu().numpy()
         # Clip to [-1, 1] to avoid overflow, then scale to int16
         wav_np = np.clip(wav_np, -1.0, 1.0)
         wav_int16 = (wav_np * 32767.0).astype('<i2')  # 16-bit little-endian PCM
