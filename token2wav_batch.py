@@ -147,6 +147,7 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
 
         self.streaming_cache = {}
+        self.speaker_cache = {}
 
 
     def forward_spk_embedding(self, spk_feat):
@@ -351,44 +352,53 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
     @torch.inference_mode()
     def forward_streaming(
-        self, generated_speech_tokens: list[int], prompt_audio: torch.Tensor, prompt_audio_sample_rate: int, last_chunk: bool
+        self, generated_speech_tokens: list[int], last_chunk: bool, request_id: str, speaker_id: str, prompt_audio: torch.Tensor = None, prompt_audio_sample_rate: int = 16000
     ):
 
-        assert prompt_audio_sample_rate == 16000
+        if speaker_id not in self.speaker_cache:
+            assert prompt_audio is not None, "prompt_audio is required for new speaker"
+            assert prompt_audio_sample_rate == 16000
 
-
-        if not self.streaming_cache:
             prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow = self.prepare_prompt_audio([prompt_audio], [prompt_audio_sample_rate])
-
 
             token_len = min(int(prompt_mels_for_flow.shape[1] / 2), len(prompt_speech_tokens_list[0]))
             prompt_mels_for_flow = prompt_mels_for_flow[:, :2 * token_len].contiguous()
             prompt_speech_tokens_list[0] = prompt_speech_tokens_list[0][:token_len]
 
-
             cache_dict = self.get_prompt_audio_cache_for_streaming_tts(prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow)
             prompt_audio_dict = {'spk_emb_for_flow': spk_emb_for_flow, 'prompt_mels_for_flow': prompt_mels_for_flow}
-            self.streaming_cache = cache_dict | prompt_audio_dict
+            
+            self.speaker_cache[speaker_id] = {'prompt_audio_dict': prompt_audio_dict, 'cache_dict': cache_dict}
 
+        if request_id not in self.streaming_cache:
+            self.streaming_cache[request_id] = self.speaker_cache[speaker_id]['cache_dict'].copy()
+
+        current_request_cache = self.streaming_cache[request_id]
+        prompt_audio_dict = self.speaker_cache[speaker_id]['prompt_audio_dict']
         generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
 
-        chunk_mel, streaming_cache = self.flow.inference_chunk(
+        chunk_mel, new_streaming_cache = self.flow.inference_chunk(
             token=generated_speech_tokens,
-            spk=self.streaming_cache['spk_emb_for_flow'].to(self.device),
-            cache=self.streaming_cache,
+            spk=prompt_audio_dict['spk_emb_for_flow'].to(self.device),
+            cache=current_request_cache,
             last_chunk=last_chunk,
             n_timesteps=10,
         )
-        prompt_audio_dict = {'spk_emb_for_flow': self.streaming_cache['spk_emb_for_flow'], 'prompt_mels_for_flow': self.streaming_cache['prompt_mels_for_flow']}
-        self.streaming_cache = streaming_cache | prompt_audio_dict
-        if self.streaming_cache['estimator_att_cache'].shape[4] > (self.streaming_cache['prompt_mels_for_flow'].shape[1] + 100):
-            self.streaming_cache['estimator_att_cache'] = torch.cat([
-                self.streaming_cache['estimator_att_cache'][:, :, :, :, :self.streaming_cache['prompt_mels_for_flow'].shape[1]],
-                self.streaming_cache['estimator_att_cache'][:, :, :, :, -100:],
+
+        self.streaming_cache[request_id] = new_streaming_cache
+
+        if self.streaming_cache[request_id]['estimator_att_cache'].shape[4] > (prompt_audio_dict['prompt_mels_for_flow'].shape[1] + 100):
+            self.streaming_cache[request_id]['estimator_att_cache'] = torch.cat([
+                self.streaming_cache[request_id]['estimator_att_cache'][:, :, :, :, :prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
+                self.streaming_cache[request_id]['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
 
 
         wav, _ = self.hift(speech_feat=chunk_mel.to(torch.float32))
+
+        if last_chunk:
+            if request_id in self.streaming_cache:
+                del self.streaming_cache[request_id]
         
         return wav
 

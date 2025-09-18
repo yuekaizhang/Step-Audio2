@@ -5,7 +5,7 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 import numpy as np
 import torchaudio
-
+import time
 from token2wav_batch import CosyVoice2_Token2Wav
 import soundfile as sf
 
@@ -56,67 +56,56 @@ if __name__ == "__main__":
     CHUNK_SIZE = 25
     OVERLAP_SIZE = 0
 
-    for batch in data_loader:
-        tts_speech_list = []
-        ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate, prompt_speech_tokens_list, prompt_text_list = batch
+    warmup_times = 3
+    for _ in range(warmup_times):
+        start_time = time.time()
+        for batch in data_loader:
+            tts_speech_list = []
+            ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate, prompt_speech_tokens_list, prompt_text_list = batch
 
-        id, generated_speech_tokens, prompt_audio, prompt_audio_sample_rate = ids[0], generated_speech_tokens_list[0], prompt_audios_list[0], prompt_audios_sample_rate[0]
-        assert prompt_audio_sample_rate == 16000
+            id, generated_speech_tokens, prompt_audio, prompt_audio_sample_rate = ids[0], generated_speech_tokens_list[0], prompt_audios_list[0], prompt_audios_sample_rate[0]
+            assert prompt_audio_sample_rate == 16000
 
-        prompt_text = prompt_text_list[0]
-        prompt_speech_tokens = prompt_speech_tokens_list[0]
-
-
-        # generated_ids_iter = fake_generated_id_iter(generated_speech_tokens)
-
-        semantic_token_ids_arr, token_offset = [], 0
-        flow_prompt_speech_token_len = len(prompt_speech_tokens)
- 
-        buffer = generated_speech_tokens
-        output_wavs = []
-        while True:
-
-            if len(buffer) >= CHUNK_SIZE + token2wav_model.flow.pre_lookahead_len:
-                wavs = token2wav_model.forward_streaming(buffer[:CHUNK_SIZE + token2wav_model.flow.pre_lookahead_len], prompt_audio, prompt_audio_sample_rate, False)
-                buffer = buffer[CHUNK_SIZE - OVERLAP_SIZE:]
-
-                output_wavs.append(wavs)
-
-            else:
-                wavs = token2wav_model.forward_streaming(buffer, prompt_audio, prompt_audio_sample_rate, True)
-                output_wavs.append(wavs)
-                token2wav_model.streaming_cache = None
-                break
-
-        # tts_speech = torch.cat(output_wavs, dim=-1)
-        # torchaudio.save(os.path.join(args.output_dir, f"{id}.wav"), tts_speech.cpu(), 24000)
-
-        for i, wav in enumerate(output_wavs):
-            output_wavs[i] = wav.cpu().numpy().squeeze()
+            prompt_text = prompt_text_list[0]
+            prompt_speech_tokens = prompt_speech_tokens_list[0]
 
 
-        audios = output_wavs
+            # generated_ids_iter = fake_generated_id_iter(generated_speech_tokens)
 
-        # cross_fade_samples = int(0.16 * 24000)
-        # fade_out = np.linspace(1, 0, cross_fade_samples)
-        # fade_in = np.linspace(0, 1, cross_fade_samples)
-        # reconstructed_audio = audios[0][:-cross_fade_samples]  # Start with first chunk minus overlap
-        # for i in range(1, len(audios)):
-        #     # Cross-fade section
-        #     cross_faded_overlap = (audios[i][:cross_fade_samples] * fade_in +
-        #                             audios[i - 1][-cross_fade_samples:] * fade_out)
-        #     # Middle section of the current chunk
-        #     middle_part = audios[i][cross_fade_samples:-cross_fade_samples]
-        #     # Concatenate
-        #     reconstructed_audio = np.concatenate([reconstructed_audio, cross_faded_overlap, middle_part])
-        # # Add the last part of the final chunk
-        # reconstructed_audio = np.concatenate([reconstructed_audio, audios[-1][-cross_fade_samples:]])
-        
-        
-        reconstructed_audio = np.concatenate(audios)
-        # Save reconstructed audio
-        sf.write(os.path.join(args.output_dir, f"{id}.wav"), reconstructed_audio, 24000, "PCM_16")
+            semantic_token_ids_arr, token_offset = [], 0
+            flow_prompt_speech_token_len = len(prompt_speech_tokens)
+    
+            buffer = generated_speech_tokens
+            output_wavs = []
+            while True:
+
+                if len(buffer) >= CHUNK_SIZE + token2wav_model.flow.pre_lookahead_len:
+                    wavs = token2wav_model.forward_streaming(buffer[:CHUNK_SIZE + token2wav_model.flow.pre_lookahead_len], False, request_id=id, speaker_id=id, prompt_audio=prompt_audio, prompt_audio_sample_rate=prompt_audio_sample_rate)
+                    buffer = buffer[CHUNK_SIZE - OVERLAP_SIZE:]
+
+                    output_wavs.append(wavs)
+
+                else:
+                    wavs = token2wav_model.forward_streaming(buffer, True, request_id=id, speaker_id=id, prompt_audio=prompt_audio, prompt_audio_sample_rate=prompt_audio_sample_rate)
+                    output_wavs.append(wavs)
+                    break
+
+            # tts_speech = torch.cat(output_wavs, dim=-1)
+            # torchaudio.save(os.path.join(args.output_dir, f"{id}.wav"), tts_speech.cpu(), 24000)
+
+            for i, wav in enumerate(output_wavs):
+                output_wavs[i] = wav.cpu().numpy().squeeze()
 
 
-        print(f"Saved {id}")
+            audios = output_wavs            
+            reconstructed_audio = np.concatenate(audios)
+            # Save reconstructed audio
+            sf.write(os.path.join(args.output_dir, f"{id}.wav"), reconstructed_audio, 24000, "PCM_16")
+
+
+            print(f"Saved {id}")
+        end_time = time.time()
+        if _ == 0:
+            token2wav_model.speaker_cache = {}
+        print(f"Warmup time: {end_time - start_time} seconds")
 
