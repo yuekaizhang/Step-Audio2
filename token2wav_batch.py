@@ -31,8 +31,19 @@ import logging
 import argparse
 import queue
 import time
-
+import numpy as np
 from hyperpyyaml import load_hyperpyyaml
+
+
+def fade_in_out(fade_in_mel:torch.Tensor, fade_out_mel:torch.Tensor, window:torch.Tensor):
+    """perform fade_in_out in tensor style
+    """
+    mel_overlap_len = int(window.shape[0] / 2)
+    fade_in_mel = fade_in_mel.clone()
+    fade_in_mel[..., :mel_overlap_len] = \
+        fade_in_mel[..., :mel_overlap_len] * window[:mel_overlap_len] + \
+        fade_out_mel[..., -mel_overlap_len:] * window[mel_overlap_len:]
+    return fade_in_mel
 
 def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, dtype):
     import tensorrt as trt
@@ -146,9 +157,15 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
                                 False)
 
 
-        self.streaming_cache = {}
+        self.streaming_flow_cache = {}
         self.speaker_cache = {}
 
+        self.mel_cache_len = 8  # hard-coded, 160ms
+        self.source_cache_len = int(self.mel_cache_len * 480)   # 50hz mel -> 24kHz wave
+        self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).cuda()
+
+        # hifigan cache for streaming tts
+        self.hift_cache_dict = {}
 
     def forward_spk_embedding(self, spk_feat):
         if isinstance(self.spk_model, onnxruntime.InferenceSession):
@@ -370,14 +387,19 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             
             self.speaker_cache[speaker_id] = {'prompt_audio_dict': prompt_audio_dict, 'cache_dict': cache_dict}
 
-        if request_id not in self.streaming_cache:
-            self.streaming_cache[request_id] = self.speaker_cache[speaker_id]['cache_dict'].copy()
+        if request_id not in self.streaming_flow_cache:
+            self.streaming_flow_cache[request_id] = self.speaker_cache[speaker_id]['cache_dict'].copy()
+            self.hift_cache_dict[request_id] = dict(
+            mel = torch.zeros(1, 80, 0, device='cuda'), 
+            source = torch.zeros(1, 1, 0, device='cuda'),
+            speech = torch.zeros(1, 0, device='cuda'),
+            )
 
-        current_request_cache = self.streaming_cache[request_id]
+        current_request_cache = self.streaming_flow_cache[request_id]
         prompt_audio_dict = self.speaker_cache[speaker_id]['prompt_audio_dict']
         generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
 
-        chunk_mel, new_streaming_cache = self.flow.inference_chunk(
+        chunk_mel, new_streaming_flow_cache = self.flow.inference_chunk(
             token=generated_speech_tokens,
             spk=prompt_audio_dict['spk_emb_for_flow'].to(self.device),
             cache=current_request_cache,
@@ -385,22 +407,42 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             n_timesteps=10,
         )
 
-        self.streaming_cache[request_id] = new_streaming_cache
+        self.streaming_flow_cache[request_id] = new_streaming_flow_cache
 
-        if self.streaming_cache[request_id]['estimator_att_cache'].shape[4] > (prompt_audio_dict['prompt_mels_for_flow'].shape[1] + 100):
-            self.streaming_cache[request_id]['estimator_att_cache'] = torch.cat([
-                self.streaming_cache[request_id]['estimator_att_cache'][:, :, :, :, :prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
-                self.streaming_cache[request_id]['estimator_att_cache'][:, :, :, :, -100:],
+        if self.streaming_flow_cache[request_id]['estimator_att_cache'].shape[4] > (prompt_audio_dict['prompt_mels_for_flow'].shape[1] + 100):
+            self.streaming_flow_cache[request_id]['estimator_att_cache'] = torch.cat([
+                self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, :prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
+                self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
 
 
-        wav, _ = self.hift(speech_feat=chunk_mel.to(torch.float32))
+
+        hift_cache_mel = self.hift_cache_dict[request_id]['mel']
+        hift_cache_source = self.hift_cache_dict[request_id]['source']
+        hift_cache_speech = self.hift_cache_dict[request_id]['speech']
+        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
+
+        speech, source = self.hift(mel, hift_cache_source)
+
+        # overlap speech smooth
+        if hift_cache_speech.shape[-1] > 0:
+            speech = fade_in_out(speech, hift_cache_speech, self.speech_window)
+
+        # update vocoder cache
+        self.hift_cache_dict[request_id] = dict(
+            mel = mel[..., -self.mel_cache_len:].clone().detach(),
+            source = source[:, :, -self.source_cache_len:].clone().detach(),
+            speech = speech[:, -self.source_cache_len:].clone().detach(),
+        )
+        if not last_chunk:
+            speech = speech[:, :-self.source_cache_len]
 
         if last_chunk:
-            if request_id in self.streaming_cache:
-                del self.streaming_cache[request_id]
+            assert request_id in self.streaming_flow_cache
+            self.streaming_flow_cache.pop(request_id)
+            self.hift_cache_dict.pop(request_id)
         
-        return wav
+        return speech
 
 def collate_fn(batch):
     ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate = [], [], [], []
