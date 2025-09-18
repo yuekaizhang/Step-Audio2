@@ -33,7 +33,8 @@ import queue
 import time
 
 from hyperpyyaml import load_hyperpyyaml
-def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, fp16):
+
+def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, dtype):
     import tensorrt as trt
     logging.info("Converting onnx to trt...")
     network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
@@ -43,8 +44,12 @@ def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, fp16):
     parser = trt.OnnxParser(network, logger)
     config = builder.create_builder_config()
     # config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 32)  # 4GB
-    if fp16:
+    if dtype == torch.float16:
         config.set_flag(trt.BuilderFlag.FP16)
+    elif dtype == torch.bfloat16:
+        config.set_flag(trt.BuilderFlag.BF16)
+    elif dtype == torch.float32:
+        config.set_flag(trt.BuilderFlag.FP32)
     profile = builder.create_optimization_profile()
     # load onnx model
     with open(onnx_model, "rb") as f:
@@ -55,7 +60,14 @@ def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, fp16):
     # set input shapes
     for i in range(len(trt_kwargs['input_names'])):
         profile.set_shape(trt_kwargs['input_names'][i], trt_kwargs['min_shape'][i], trt_kwargs['opt_shape'][i], trt_kwargs['max_shape'][i])
-    tensor_dtype = trt.DataType.HALF if fp16 else trt.DataType.FLOAT
+    if dtype == torch.float16:
+        tensor_dtype = trt.DataType.HALF
+    elif dtype == torch.bfloat16:
+        tensor_dtype = trt.DataType.BF16
+    elif dtype == torch.float32:
+        tensor_dtype = trt.DataType.FLOAT
+    else:
+        raise ValueError('invalid dtype {}'.format(dtype))
     # set input and output data type
     for i in range(network.num_inputs):
         input_tensor = network.get_input(i)
@@ -89,15 +101,17 @@ class TrtContextWrapper:
         self.trt_context_pool.put([context, stream])
 
 class CosyVoice2_Token2Wav(torch.nn.Module):
-    def __init__(self, model_dir: str = "./CosyVoice2-0.5B", enable_trt: bool = False, device_id: int = 0):
+    def __init__(self, model_dir: str, enable_trt: bool = False, device_id: int = 0, streaming: bool = False, dtype: torch.dtype = torch.float16):
         super().__init__()
         self.device_id = device_id
         self.device = f"cuda:{device_id}"
         with open(f"{model_dir}/flow.yaml", "r") as f:
             configs = load_hyperpyyaml(f)
             self.flow = configs['flow']
-        # self.flow = CausalMaskedDiffWithXvec()
-        self.flow.half()
+
+        self.dtype = dtype
+        self.flow.to(self.dtype)
+
         self.flow.load_state_dict(torch.load(f"{model_dir}/flow.pt", map_location="cpu", weights_only=True), strict=True)
         self.flow.to(self.device).eval()
 
@@ -116,14 +130,23 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
         gpu="l20"
         if enable_trt:
-            self.load_trt(f'{model_dir}/flow.decoder.estimator.fp16.dynamic_batch.{gpu}.plan',
-                                f'{model_dir}/flow.decoder.estimator.fp32.dynamic_batch.onnx',
-                                1,
-                                True)
+            if streaming:
+                self.load_trt(f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.chunk.{gpu}.plan',
+                                    f'{model_dir}/flow.decoder.estimator.chunk.fp32.dynamic_batch.simplify.onnx',
+                                    1,
+                                    self.dtype, streaming)
+            else:
+                self.load_trt(f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.{gpu}.plan',
+                                    f'{model_dir}/flow.decoder.estimator.fp32.dynamic_batch.onnx',
+                                    1,
+                                    self.dtype)
             self.load_spk_trt(f'{model_dir}/campplus.{gpu}.fp32.trt',
                                 f'{model_dir}/campplus.onnx',
                                 1,
                                 False)
+
+
+        self.streaming_cache = {}
 
 
     def forward_spk_embedding(self, spk_feat):
@@ -172,11 +195,15 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
         input_names = ["input"]
         return {'min_shape': min_shape, 'opt_shape': opt_shape, 'max_shape': max_shape, 'input_names': input_names}
 
-    def load_trt(self, flow_decoder_estimator_model, flow_decoder_onnx_model, trt_concurrent=1, fp16=True):
+    def load_trt(self, flow_decoder_estimator_model, flow_decoder_onnx_model, trt_concurrent=1, dtype=torch.float16, streaming=False):
         assert torch.cuda.is_available(), 'tensorrt only supports gpu!'
         if not os.path.exists(flow_decoder_estimator_model) or os.path.getsize(flow_decoder_estimator_model) == 0:
-            trt_kwargs = self.get_trt_kwargs_dynamic_batch(opt_batch_size=2, max_batch_size=16)
-            convert_onnx_to_trt(flow_decoder_estimator_model, trt_kwargs, flow_decoder_onnx_model, fp16)
+            opt_batch_size = 2
+            max_batch_size = 16
+            if streaming:
+                opt_batch_size, max_batch_size = 1, 1 # only support batch size 1 for streaming tts
+            trt_kwargs = self.get_trt_kwargs_dynamic_batch(opt_batch_size=opt_batch_size, max_batch_size=max_batch_size, streaming=streaming)
+            convert_onnx_to_trt(flow_decoder_estimator_model, trt_kwargs, flow_decoder_onnx_model, dtype)
         del self.flow.decoder.estimator
         import tensorrt as trt
         with open(flow_decoder_estimator_model, 'rb') as f:
@@ -184,11 +211,17 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
         assert estimator_engine is not None, 'failed to load trt {}'.format(flow_decoder_estimator_model)
         self.flow.decoder.estimator = TrtContextWrapper(estimator_engine, trt_concurrent=trt_concurrent, device=self.device)
 
-    def get_trt_kwargs_dynamic_batch(self, opt_batch_size=2, max_batch_size=64):
-        min_shape = [(2, 80, 4), (2, 1, 4), (2, 80, 4), (2, 80, 4), (2,), (2, 80)]
-        opt_shape = [(opt_batch_size*2, 80, 500), (opt_batch_size*2, 1, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2,), (opt_batch_size*2, 80)]
-        max_shape = [(max_batch_size*2, 80, 3000), (max_batch_size*2, 1, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2,), (max_batch_size*2, 80)]
-        input_names = ["x", "mask", "mu", "cond", "t", "spks"]
+    def get_trt_kwargs_dynamic_batch(self, opt_batch_size=2, max_batch_size=64, streaming=False):
+        if streaming:
+            min_shape = [(2, 80, 4), (2, 80, 4), (2, 80, 4), (2,), (2, 80), (16, 2, 1024, 2), (16, 2, 8, 0, 128)]
+            opt_shape = [(opt_batch_size*2, 80, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2,), (opt_batch_size*2, 80), (16, opt_batch_size*2, 1024, 2), (16, opt_batch_size*2, 8, 100, 128)]
+            max_shape = [(max_batch_size*2, 80, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2,), (max_batch_size*2, 80), (16, max_batch_size*2, 1024, 2), (16, max_batch_size*2, 8, 1000, 128)]
+            input_names = ["x", "mu", "cond", "t", "spks", "cnn_cache", "att_cache"]
+        else:
+            min_shape = [(2, 80, 4), (2, 1, 4), (2, 80, 4), (2, 80, 4), (2,), (2, 80)]
+            opt_shape = [(opt_batch_size*2, 80, 500), (opt_batch_size*2, 1, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2, 80, 500), (opt_batch_size*2,), (opt_batch_size*2, 80)]
+            max_shape = [(max_batch_size*2, 80, 3000), (max_batch_size*2, 1, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2, 80, 3000), (max_batch_size*2,), (max_batch_size*2, 80)]
+            input_names = ["x", "mask", "mu", "cond", "t", "spks"]
         return {'min_shape': min_shape, 'opt_shape': opt_shape, 'max_shape': max_shape, 'input_names': input_names}
 
     def prompt_audio_tokenization(self, prompt_audios_list: list[torch.Tensor]) -> list[list[int]]:
@@ -215,7 +248,9 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             spk_emb = self.forward_spk_embedding(spk_feat)
 
             spk_emb_for_flow.append(spk_emb)
-        spk_emb_for_flow = torch.tensor(spk_emb_for_flow)    
+        spk_emb_for_flow = torch.tensor(spk_emb_for_flow)  
+        if self.dtype != torch.float32:
+            spk_emb_for_flow = spk_emb_for_flow.to(self.dtype)
         return spk_emb_for_flow
     
     def get_prompt_mels(self, prompt_audios_list: list[torch.Tensor], prompt_audios_sample_rate: list[int]):
@@ -271,11 +306,7 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
         assert all(sample_rate == 16000 for sample_rate in prompt_audios_sample_rate)
         
 
-        prompt_speech_tokens_list = self.prompt_audio_tokenization(prompt_audios_list)
-
-        prompt_mels_for_flow, prompt_mels_lens_for_flow = self.get_prompt_mels(prompt_audios_list, prompt_audios_sample_rate)
-
-        spk_emb_for_flow = self.get_spk_emb(prompt_audios_list)
+        prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow = self.prepare_prompt_audio(prompt_audios_list, prompt_audios_sample_rate)
 
         generated_mels, generated_mels_lens = self.forward_flow(prompt_speech_tokens_list, generated_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow)
 
@@ -283,6 +314,83 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
         
         return generated_wavs
 
+    def prepare_prompt_audio(
+        self, prompt_audios_list: list[torch.Tensor], prompt_audios_sample_rate: list[int]
+    ):
+        # assert all item in prompt_audios_sample_rate is 16000
+        assert all(sample_rate == 16000 for sample_rate in prompt_audios_sample_rate)
+        
+
+        prompt_speech_tokens_list = self.prompt_audio_tokenization(prompt_audios_list)
+
+        prompt_mels_for_flow, prompt_mels_lens_for_flow = self.get_prompt_mels(prompt_audios_list, prompt_audios_sample_rate)
+
+        spk_emb_for_flow = self.get_spk_emb(prompt_audios_list)
+        
+        return prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow
+
+
+    def get_prompt_audio_cache_for_streaming_tts(
+        self, prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow
+    ):
+        assert len(prompt_speech_tokens_list) == 1, "only support batch size 1 for streaming tts"
+        for i, prompt_speech_tokens in enumerate(prompt_speech_tokens_list):
+            prompt_speech_tokens_list[i] = torch.tensor(prompt_speech_tokens + prompt_speech_tokens_list[i][:3])
+        prompt_speech_tokens_tensor = torch.nn.utils.rnn.pad_sequence(prompt_speech_tokens_list, batch_first=True, padding_value=0)
+
+        cache = self.flow.setup_cache(
+            prompt_speech_tokens_tensor.to(self.device),
+            prompt_mels_for_flow.to(self.device),
+            spk_emb_for_flow.to(self.device),
+            n_timesteps=10
+        )
+
+        # cache dict's tensor batch dim is 1 for now
+        return cache
+
+
+    @torch.inference_mode()
+    def forward_streaming(
+        self, generated_speech_tokens: list[int], prompt_audio: torch.Tensor, prompt_audio_sample_rate: int, last_chunk: bool
+    ):
+
+        assert prompt_audio_sample_rate == 16000
+
+
+        if not self.streaming_cache:
+            prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow = self.prepare_prompt_audio([prompt_audio], [prompt_audio_sample_rate])
+
+
+            token_len = min(int(prompt_mels_for_flow.shape[1] / 2), len(prompt_speech_tokens_list[0]))
+            prompt_mels_for_flow = prompt_mels_for_flow[:, :2 * token_len].contiguous()
+            prompt_speech_tokens_list[0] = prompt_speech_tokens_list[0][:token_len]
+
+
+            cache_dict = self.get_prompt_audio_cache_for_streaming_tts(prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow)
+            prompt_audio_dict = {'spk_emb_for_flow': spk_emb_for_flow, 'prompt_mels_for_flow': prompt_mels_for_flow}
+            self.streaming_cache = cache_dict | prompt_audio_dict
+
+        generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
+
+        chunk_mel, streaming_cache = self.flow.inference_chunk(
+            token=generated_speech_tokens,
+            spk=self.streaming_cache['spk_emb_for_flow'].to(self.device),
+            cache=self.streaming_cache,
+            last_chunk=last_chunk,
+            n_timesteps=10,
+        )
+        prompt_audio_dict = {'spk_emb_for_flow': self.streaming_cache['spk_emb_for_flow'], 'prompt_mels_for_flow': self.streaming_cache['prompt_mels_for_flow']}
+        self.streaming_cache = streaming_cache | prompt_audio_dict
+        if self.streaming_cache['estimator_att_cache'].shape[4] > (self.streaming_cache['prompt_mels_for_flow'].shape[1] + 100):
+            self.streaming_cache['estimator_att_cache'] = torch.cat([
+                self.streaming_cache['estimator_att_cache'][:, :, :, :, :self.streaming_cache['prompt_mels_for_flow'].shape[1]],
+                self.streaming_cache['estimator_att_cache'][:, :, :, :, -100:],
+            ], dim=4)
+
+
+        wav, _ = self.hift(speech_feat=chunk_mel.to(torch.float32))
+        
+        return wav
 
 def collate_fn(batch):
     ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate = [], [], [], []

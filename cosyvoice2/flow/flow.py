@@ -152,7 +152,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         feat, estimator_cnn_cache, estimator_att_cache = self.decoder.forward_chunk(
             mu = h.transpose(1, 2).contiguous(),
             spks = spk,
-            cond = mel.transpose(1, 2).contiguous(),
+            cond = mel.transpose(1, 2).contiguous().to(h.dtype),
             n_timesteps = n_timesteps,
             temperature = 1.0,
             cnn_cache = None,
