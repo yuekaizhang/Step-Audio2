@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import torchaudio
 import time
-from token2wav_batch import CosyVoice2_Token2Wav
+from token2wav_dit import CosyVoice2_Token2Wav
 import soundfile as sf
 
 def collate_fn(batch):
