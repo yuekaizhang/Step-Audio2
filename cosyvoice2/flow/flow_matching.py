@@ -39,8 +39,6 @@ class CausalConditionalCFM(torch.nn.Module):
          # a maximum of 600s
         self.register_buffer('rand_noise', torch.randn([1, self.out_channels, 50 * 600]), persistent=False)
 
-        self.register_buffer('cnn_cache_buffer', torch.zeros(16, 16, 2, 1024, 2), persistent=False)
-        self.register_buffer('att_cache_buffer', torch.zeros(16, 16, 2, 8, 1000, 128), persistent=False)
         self.register_buffer('dummy_buffer', torch.zeros(1), persistent=False)
 
     def scatter_cuda_graph(self, enable_cuda_graph: bool):
@@ -224,6 +222,8 @@ class CausalConditionalCFM(torch.nn.Module):
             att_cache = [None for _ in range(len(t_span)-1)]
             att_cache = torch.empty((len(t_span)-1, 16, x.shape[0] * 2, 8, 0, 128), device=x.device, dtype=x.dtype)
         # next chunk's cache at each timestep
+        new_cnn_caches = []
+        new_att_caches = []
 
         if att_cache[0] is not None:
             last_att_len = att_cache.shape[4]
@@ -260,11 +260,11 @@ class CausalConditionalCFM(torch.nn.Module):
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t
 
-            self.cnn_cache_buffer[step-1] = this_new_cnn_cache
-            self.att_cache_buffer[step-1][:, :, :, :x.shape[2]+last_att_len, :] = this_new_att_cache
+            new_cnn_caches.append(this_new_cnn_cache)
+            new_att_caches.append(this_new_att_cache)
         
-        cnn_cache = self.cnn_cache_buffer
-        att_cache = self.att_cache_buffer[:, :, :, :, :x.shape[2]+last_att_len, :]
+        cnn_cache = torch.stack(new_cnn_caches)
+        att_cache = torch.stack(new_att_caches)
         return x, cnn_cache, att_cache
     
     @torch.inference_mode()

@@ -362,16 +362,15 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             spk_emb_for_flow.to(self.device),
             n_timesteps=10
         )
-
-        # cache dict's tensor batch dim is 1 for now
-        return cache
+        new_cache = {k: v.clone() for k, v in cache.items()}
+        # Hack: this is a hack to avoid in-place changes to the cache['estimator_att_cache'] and cache['estimator_cnn_cache']
+        return new_cache
 
 
     @torch.inference_mode()
     def forward_streaming(
         self, generated_speech_tokens: list[int], last_chunk: bool, request_id: str, speaker_id: str, prompt_audio: torch.Tensor = None, prompt_audio_sample_rate: int = 16000
-    ):
-
+    ):  
         if speaker_id not in self.speaker_cache:
             assert prompt_audio is not None, "prompt_audio is required for new speaker"
             assert prompt_audio_sample_rate == 16000
@@ -382,13 +381,14 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             prompt_mels_for_flow = prompt_mels_for_flow[:, :2 * token_len].contiguous()
             prompt_speech_tokens_list[0] = prompt_speech_tokens_list[0][:token_len]
 
-            cache_dict = self.get_prompt_audio_cache_for_streaming_tts(prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow)
             prompt_audio_dict = {'spk_emb_for_flow': spk_emb_for_flow, 'prompt_mels_for_flow': prompt_mels_for_flow}
-            
+
+            cache_dict = self.get_prompt_audio_cache_for_streaming_tts(prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow)
             self.speaker_cache[speaker_id] = {'prompt_audio_dict': prompt_audio_dict, 'cache_dict': cache_dict}
+            print(f"speaker_id {speaker_id} added to cache")
 
         if request_id not in self.streaming_flow_cache:
-            self.streaming_flow_cache[request_id] = self.speaker_cache[speaker_id]['cache_dict'].copy()
+            self.streaming_flow_cache[request_id] = {k: v.clone() for k, v in self.speaker_cache[speaker_id]['cache_dict'].items()}
             self.hift_cache_dict[request_id] = dict(
             mel = torch.zeros(1, 80, 0, device='cuda'), 
             source = torch.zeros(1, 1, 0, device='cuda'),
@@ -396,12 +396,14 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             )
 
         current_request_cache = self.streaming_flow_cache[request_id]
-        prompt_audio_dict = self.speaker_cache[speaker_id]['prompt_audio_dict']
+
+        current_prompt_audio_dict = self.speaker_cache[speaker_id]['prompt_audio_dict']
         generated_speech_tokens = torch.tensor([generated_speech_tokens], dtype=torch.int32, device='cuda')
+
 
         chunk_mel, new_streaming_flow_cache = self.flow.inference_chunk(
             token=generated_speech_tokens,
-            spk=prompt_audio_dict['spk_emb_for_flow'].to(self.device),
+            spk=current_prompt_audio_dict['spk_emb_for_flow'].to(self.device),
             cache=current_request_cache,
             last_chunk=last_chunk,
             n_timesteps=10,
@@ -409,18 +411,19 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
         self.streaming_flow_cache[request_id] = new_streaming_flow_cache
 
-        if self.streaming_flow_cache[request_id]['estimator_att_cache'].shape[4] > (prompt_audio_dict['prompt_mels_for_flow'].shape[1] + 100):
+
+        if self.streaming_flow_cache[request_id]['estimator_att_cache'].shape[4] > (current_prompt_audio_dict['prompt_mels_for_flow'].shape[1] + 100):
             self.streaming_flow_cache[request_id]['estimator_att_cache'] = torch.cat([
-                self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, :prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
+                self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, :current_prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
                 self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
 
 
 
-        hift_cache_mel = self.hift_cache_dict[request_id]['mel']
-        hift_cache_source = self.hift_cache_dict[request_id]['source']
-        hift_cache_speech = self.hift_cache_dict[request_id]['speech']
-        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
+        hift_cache_mel = self.hift_cache_dict[request_id]['mel'].clone()
+        hift_cache_source = self.hift_cache_dict[request_id]['source'].clone()
+        hift_cache_speech = self.hift_cache_dict[request_id]['speech'].clone()
+        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2).clone()
 
         speech, source = self.hift(mel, hift_cache_source)
 
@@ -441,7 +444,7 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             assert request_id in self.streaming_flow_cache
             self.streaming_flow_cache.pop(request_id)
             self.hift_cache_dict.pop(request_id)
-        
+
         return speech
 
 def collate_fn(batch):
