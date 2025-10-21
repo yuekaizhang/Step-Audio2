@@ -149,7 +149,6 @@ class CausalConditionalCFM(torch.nn.Module):
             batch_size = x.size(0)
             with stream:
                 estimator.set_input_shape('x', (batch_size, 80, x.size(2)))
-                # estimator.set_input_shape('mask', (batch_size, 1, x.size(2)))
                 estimator.set_input_shape('mu', (batch_size, 80, x.size(2)))
                 estimator.set_input_shape('t', (batch_size,))
                 estimator.set_input_shape('spks', (batch_size, 80))

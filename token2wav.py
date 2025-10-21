@@ -121,7 +121,7 @@ class TrtContextWrapper:
         self.trt_context_pool.put([context, stream])
 
 
-class CosyVoice2_Token2Wav(torch.nn.Module):
+class Token2Wav(torch.nn.Module):
     def __init__(self, model_dir: str, enable_trt: bool = False, device_id: int = 0, streaming: bool = False, dtype: torch.dtype = torch.float16):
         super().__init__()
         self.device_id = device_id
@@ -149,24 +149,23 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             providers=["CPUExecutionProvider"])
         self.audio_tokenizer = s3tokenizer.load_model(f"{model_dir}/speech_tokenizer_v2_25hz.onnx").to(self.device).eval()
 
-        gpu = "l20"
         if enable_trt:
             if streaming:
                 self.load_trt(
-                    f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.chunk.{gpu}.plan',
+                    f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.chunk.plan',
                     f'{model_dir}/flow.decoder.estimator.chunk.fp32.dynamic_batch.simplify.onnx',
                     1,
                     self.dtype, streaming
                 )
             else:
                 self.load_trt(
-                    f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.{gpu}.plan',
+                    f'{model_dir}/flow.decoder.estimator.{self.dtype}.dynamic_batch.plan',
                     f'{model_dir}/flow.decoder.estimator.fp32.dynamic_batch.onnx',
                     1,
                     self.dtype
                 )
             self.load_spk_trt(
-                f'{model_dir}/campplus.{gpu}.fp32.trt',
+                f'{model_dir}/campplus.fp32.trt',
                 f'{model_dir}/campplus.onnx',
                 1,
                 False
@@ -230,6 +229,7 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
     def load_trt(self, flow_decoder_estimator_model, flow_decoder_onnx_model, trt_concurrent=1, dtype=torch.float16, streaming=False):
         assert torch.cuda.is_available(), 'tensorrt only supports gpu!'
+        assert os.path.exists(flow_decoder_onnx_model), f'Please use tools/export_onnx.py or tools/export_onnx_streaming.py to export onnx model for token2wav first.'
         if not os.path.exists(flow_decoder_estimator_model) or os.path.getsize(flow_decoder_estimator_model) == 0:
             opt_batch_size = 2
             max_batch_size = 16
@@ -352,19 +352,22 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
 
     @torch.inference_mode()
     def forward(
-        self, generated_speech_tokens_list: list[list[int]], prompt_audios_list: list[torch.Tensor], prompt_audios_sample_rate: list[int]
-    ):
-        assert all(sample_rate == 16000 for sample_rate in prompt_audios_sample_rate)
-
-        prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow = self.prepare_prompt_audio(prompt_audios_list, prompt_audios_sample_rate)
-
+        self, generated_speech_tokens: list[int], prompt_wav: str):
+        generated_speech_tokens_list = [generated_speech_tokens]
+        audio = s3tokenizer.load_audio(prompt_wav, sr=16000)
+        prompt_speech_tokens_list, prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow = self.prepare_prompt_audio([audio], [16000])
         generated_mels, generated_mels_lens = self.forward_flow(
             prompt_speech_tokens_list, generated_speech_tokens_list,
             prompt_mels_for_flow, prompt_mels_lens_for_flow, spk_emb_for_flow
         )
 
         generated_wavs = self.forward_hift(generated_mels, generated_mels_lens, prompt_mels_lens_for_flow)
-        return generated_wavs
+
+        wav = generated_wavs[0]
+        output = io.BytesIO()
+        torchaudio.save(output, wav.cpu(), sample_rate=24000, format='wav')
+
+        return output.getvalue()
 
     def prepare_prompt_audio(
         self, prompt_audios_list: list[torch.Tensor], prompt_audios_sample_rate: list[int]
@@ -397,9 +400,13 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
         return new_cache
 
     @torch.inference_mode()
-    def forward_streaming(
-        self, generated_speech_tokens: list[int], last_chunk: bool, request_id: str, speaker_id: str, prompt_audio: torch.Tensor = None, prompt_audio_sample_rate: int = 16000
+    def stream(
+        self, generated_speech_tokens: list[int], prompt_wav: str, last_chunk: bool = False, 
     ):
+        speaker_id = prompt_wav
+        request_id = prompt_wav
+        prompt_audio_sample_rate = 16000
+        prompt_audio = s3tokenizer.load_audio(prompt_wav, sr=prompt_audio_sample_rate)
         if speaker_id not in self.speaker_cache:
             assert prompt_audio is not None, "prompt_audio is required for new speaker"
             assert prompt_audio_sample_rate == 16000
@@ -474,53 +481,17 @@ class CosyVoice2_Token2Wav(torch.nn.Module):
             assert request_id in self.streaming_flow_cache
             self.streaming_flow_cache.pop(request_id)
             self.hift_cache_dict.pop(request_id)
-
-        return speech
-
-
-def collate_fn(batch):
-    ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate = [], [], [], []
-    for item in batch:
-        generated_speech_tokens_list.append(item['target_audio_cosy2_tokens'])
-        audio = torch.from_numpy(item['prompt_audio']['array']).float()
-        prompt_audios_list.append(audio)
-        prompt_audios_sample_rate.append(item['prompt_audio']['sampling_rate'])
-        ids.append(item['id'])
-
-    return ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate
-
-
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--enable-trt", action="store_true")
-    parser.add_argument("--model-dir", type=str, default="./Step-Audio-2-mini/token2wav")
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--output-dir", type=str, default="generated_wavs")
-    parser.add_argument("--huggingface-dataset-split", type=str, default="wenetspeech4tts")
-    parser.add_argument("--warmup", type=int, default=3, help="Number of warmup epochs, performance statistics will only be collected from the last epoch")
-    return parser.parse_args()
-
+        wav_np = speech.cpu().numpy()
+        # Clip to [-1, 1] to avoid overflow, then scale to int16
+        wav_np = np.clip(wav_np, -1.0, 1.0)
+        wav_int16 = (wav_np * 32767.0).astype('<i2')  # 16-bit little-endian PCM
+        pcm_bytes = wav_int16.tobytes()
+        return pcm_bytes
 
 if __name__ == "__main__":
-    args = get_args()
-    model = CosyVoice2_Token2Wav(model_dir=args.model_dir, enable_trt=args.enable_trt)
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    dataset_name = "yuekai/seed_tts_cosy2"
+    token2wav = Token2wav('Step-Audio-2-mini/token2wav')
 
-    dataset = load_dataset(dataset_name, split=args.huggingface_dataset_split, trust_remote_code=True)
-
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0)
-
-    for _ in range(args.warmup):
-        start_time = time.time()
-        for batch in data_loader:
-            ids, generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate = batch
-
-            generated_wavs = model(generated_speech_tokens_list, prompt_audios_list, prompt_audios_sample_rate)
-
-            for id, wav in zip(ids, generated_wavs):
-                torchaudio.save(f"{args.output_dir}/{id}.wav", wav.cpu(), 24000)
-        end_time = time.time()
-        epoch_time = end_time - start_time
-        print(f"Measurement epoch time taken: {epoch_time:.4f} seconds")
+    tokens = [1493, 4299, 4218, 2049, 528, 2752, 4850, 4569, 4575, 6372, 2127, 4068, 2312, 4993, 4769, 2300, 226, 2175, 2160, 2152, 6311, 6065, 4859, 5102, 4615, 6534, 6426, 1763, 2249, 2209, 5938, 1725, 6048, 3816, 6058, 958, 63, 4460, 5914, 2379, 735, 5319, 4593, 2328, 890, 35, 751, 1483, 1484, 1483, 2112, 303, 4753, 2301, 5507, 5588, 5261, 5744, 5501, 2341, 2001, 2252, 2344, 1860, 2031, 414, 4366, 4366, 6059, 5300, 4814, 5092, 5100, 1923, 3054, 4320, 4296, 2148, 4371, 5831, 5084, 5027, 4946, 4946, 2678, 575, 575, 521, 518, 638, 1367, 2804, 3402, 4299]
+    audio = token2wav(tokens, 'assets/default_male.wav')
+    with open('assets/give_me_a_brief_introduction_to_the_great_wall.wav', 'wb') as f:
+        f.write(audio)
