@@ -65,22 +65,14 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
     def inference(self,
                   token,
                   token_len,
-                #   prompt_token,
-                #   prompt_token_len,
                   prompt_feat,
                   prompt_feat_len,
                   embedding,
                   n_timesteps: int = 10,
                   ):
-        # assert token.shape[0] == 1
-
         # xvec projection
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
-    
-        # concat text and prompt_text
-        # token_len = prompt_token_len + token_len
-        # token = torch.concat([prompt_token, token], dim=1)
         
         mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
@@ -89,12 +81,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         h, h_lengths = self.encoder.forward(token, token_len)
         h = self.encoder_proj(h)
 
-        # condition
-        # mel_len1 = prompt_feat.shape[1]
-        # mel_len2 = h.shape[1] - prompt_feat.shape[1]
-
         conds = torch.zeros_like(h)
-        # conds[:, :mel_len1] = prompt_feat
         for i, j in enumerate(prompt_feat_len):
             conds[i, :j] = prompt_feat[i, :j]
         conds = conds.transpose(1, 2).contiguous()
@@ -110,8 +97,6 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             n_timesteps=n_timesteps,
         )
 
-        # feat = feat[:, :, mel_len1:]
-        # assert feat.shape[2] == mel_len2
         return feat.float(), h_lengths
 
     @torch.inference_mode()

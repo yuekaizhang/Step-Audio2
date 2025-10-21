@@ -91,7 +91,6 @@ class CausalConditionalCFM(torch.nn.Module):
             cond: Not used but kept for future purposes
         """
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
-        # t = t.unsqueeze(dim=0)
         t_in = torch.zeros([x.shape[0] * 2], device=x.device, dtype=x.dtype)
 
         assert self.inference_cfg_rate > 0, 'inference_cfg_rate better > 0'
@@ -124,7 +123,6 @@ class CausalConditionalCFM(torch.nn.Module):
 
     @torch.inference_mode()
     def forward(self, mu, mask, spks, cond, n_timesteps=10, temperature=1.0):
-        # z = self.rand_noise[:, :, :mu.size(2)] * temperature
         z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         # cosine scheduling
@@ -211,7 +209,6 @@ class CausalConditionalCFM(torch.nn.Module):
         assert self.inference_cfg_rate > 0, 'cfg rate should be > 0'
         
         t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
-        # t = t.unsqueeze(dim=0)  # (b,)
         t_in = torch.zeros([x.shape[0] * 2], device=x.device, dtype=x.dtype)
 
         # setup initial cache
@@ -288,9 +285,7 @@ class CausalConditionalCFM(torch.nn.Module):
         # get offset from att_cache
         offset = att_cache.shape[4] if att_cache is not None else 0
         z = self.rand_noise[:, :, offset:offset+mu.size(2)] * temperature
-
         z = z.to(mu.dtype)
-
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         # cosine scheduling
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
