@@ -441,12 +441,6 @@ class Token2wav(torch.nn.Module):
                 self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, :current_prompt_audio_dict['prompt_mels_for_flow'].shape[1]],
                 self.streaming_flow_cache[request_id]['estimator_att_cache'][:, :, :, :, -100:],
             ], dim=4)
-        
-        # vocoder cache
-        hift_cache_mel = self.hift_cache_dict['mel']
-        hift_cache_source = self.hift_cache_dict['source']
-        hift_cache_speech = self.hift_cache_dict['speech']
-        mel = torch.concat([hift_cache_mel, chunk_mel], dim=2)
 
         hift_cache_mel = self.hift_cache_dict[request_id]['mel'].clone()
         hift_cache_source = self.hift_cache_dict[request_id]['source'].clone()
