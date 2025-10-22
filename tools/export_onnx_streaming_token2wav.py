@@ -12,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+This script is used to export the streaming token2wav model to onnx.
+python3 tools/export_onnx_streaming_token2wav.py
+"""
 
 from __future__ import print_function
 
@@ -26,6 +30,24 @@ import torch
 from tqdm import tqdm
 from hyperpyyaml import load_hyperpyyaml
 
+import sys
+import os
+# add ../ to python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def get_args():
+    parser = argparse.ArgumentParser(description='export your model for deployment')
+    parser.add_argument('--model_dir',
+                        type=str,
+                        default='Step-Audio-2-mini/token2wav',
+                        help='local path')
+    parser.add_argument('--onnx_model',
+                        type=str,
+                        default='flow.decoder.estimator.chunk.fp32.static_batch.onnx',
+                        help='onnx model name')
+    args = parser.parse_args()
+    print(args)
+    return args
 
 def get_dummy_input_chunk(batch_size, seq_len, prev_seq_len, out_channels, estimator, device):
     x = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
@@ -42,22 +64,6 @@ def get_dummy_input_chunk(batch_size, seq_len, prev_seq_len, out_channels, estim
     cnn_cache = torch.rand((depth, batch_size, cnn_channels, 2), dtype=torch.float32, device=device)
     att_cache = torch.rand((depth, batch_size, num_heads, prev_seq_len, head_dim * 2), dtype=torch.float32, device=device)
     return x, mu, t, spks, cond, cnn_cache, att_cache
-
-
-def get_args():
-    parser = argparse.ArgumentParser(description='export your model for deployment')
-    parser.add_argument('--model_dir',
-                        type=str,
-                        default='Step-Audio-2-mini/token2wav',
-                        help='local path')
-    parser.add_argument('--onnx_model',
-                        type=str,
-                        default='flow.decoder.estimator.chunk.fp32.dynamic_batch.onnx',
-                        help='onnx model name')
-    args = parser.parse_args()
-    print(args)
-    return args
-
 
 class DiTChunkWrapper(torch.nn.Module):
     def __init__(self, dit_model):

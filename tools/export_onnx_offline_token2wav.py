@@ -12,6 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+This script is used to export the offline token2wav model to onnx.
+python3 tools/export_onnx_offline_token2wav.py
+"""
 
 from __future__ import print_function
 
@@ -25,17 +29,10 @@ import random
 import torch
 from tqdm import tqdm
 from hyperpyyaml import load_hyperpyyaml
-
-
-def get_dummy_input(batch_size, seq_len, out_channels, device):
-    x = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
-    mask = torch.ones((batch_size, 1, seq_len), dtype=torch.float32, device=device)
-    mu = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
-    t = torch.rand((batch_size), dtype=torch.float32, device=device)
-    spks = torch.rand((batch_size, out_channels), dtype=torch.float32, device=device)
-    cond = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
-    return x, mask, mu, t, spks, cond
-
+import sys
+import os
+# add ../ to python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_args():
     parser = argparse.ArgumentParser(description='export your model for deployment')
@@ -51,6 +48,14 @@ def get_args():
     print(args)
     return args
 
+def get_dummy_input(batch_size, seq_len, out_channels, device):
+    x = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
+    mask = torch.ones((batch_size, 1, seq_len), dtype=torch.float32, device=device)
+    mu = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
+    t = torch.rand((batch_size), dtype=torch.float32, device=device)
+    spks = torch.rand((batch_size, out_channels), dtype=torch.float32, device=device)
+    cond = torch.rand((batch_size, out_channels, seq_len), dtype=torch.float32, device=device)
+    return x, mask, mu, t, spks, cond
 
 @torch.no_grad()
 def main():
